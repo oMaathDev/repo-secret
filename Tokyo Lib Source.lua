@@ -59,7 +59,32 @@ local library = {
         ['colortrans'] = 'https://raw.githubusercontent.com/portallol/luna/main/modules/trans.png';
     };
     numberStrings = {['Zero'] = 0, ['One'] = 1, ['Two'] = 2, ['Three'] = 3, ['Four'] = 4, ['Five'] = 5, ['Six'] = 6, ['Seven'] = 7, ['Eight'] = 8, ['Nine'] = 9};
-    signal = loadstring(game:HttpGet('https://raw.githubusercontent.com/drillygzzly/Other/main/1414'))();
+    
+signal = {
+    new = function()
+        local event = Instance.new("BindableEvent")
+        local signalObject = {}
+
+        function signalObject:Connect(callback)
+            return event.Event:Connect(callback)
+        end
+
+        function signalObject:Fire(...)
+            event:Fire(...)
+        end
+
+        function signalObject:Wait()
+            return event.Event:Wait()
+        end
+
+        function signalObject:Destroy()
+            event:Destroy()
+        end
+
+        return signalObject
+    end
+};
+
     open = false;
     opening = false;
     hasInit = false;
