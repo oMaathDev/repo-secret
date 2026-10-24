@@ -5,8 +5,8 @@
 ---- SOURCE CODE [COLOR OR DIE]
 
 --[[
-    COLOR OR DIE | ESP v1.5
-    Categorias: monstros, baldes de tinta, ferramentas, pinceis e portas coloridas.
+    COLOR OR DIE | ESP v1.8
+    Categorias: monstros, tintas, ferramentas, pinceis, portas coloridas e portas Safe Zone.
     Atalhos: DELETE = mostrar/ocultar menu.
     Script local: nao teleporta, nao altera objetos do servidor, nao coleta itens.
     Execute novamente para substituir a instancia anterior.
@@ -18,6 +18,12 @@
     Nao depende de MeshId nem do botao APRENDER PINCEL.
     v1.5: contorno de monstros isolado do modelo, com recuperacao de
     Highlight e atualizacao automatica quando a geometria muda.
+    v1.6: controle local de WalkSpeed com ativacao, presets, slider,
+    entrada numerica, anti-reset opcional e restauracao ao desligar.
+    v1.7: ESP separado de portas Safe Zone, deteccao por nome/contexto,
+    selecao manual pelo clique quando os nomes internos sao genericos.
+    v1.8: raycast ignora colisoes invisiveis e exige confirmar a
+    geometria da porta antes de cadastrar manualmente.
 ]]
 
 local Players = game:GetService("Players")
@@ -51,6 +57,7 @@ local enabled = {
     Tools = true,
     Brushes = true,
     Doors = true,
+    SafeDoors = true,
     Distance = true,
 }
 local categoryColors = {
@@ -59,16 +66,17 @@ local categoryColors = {
     Tools = Color3.fromRGB(85, 196, 255),
     Brushes = Color3.fromRGB(205, 110, 255),
     Doors = Color3.fromRGB(248, 248, 248),
+    SafeDoors = Color3.fromRGB(76, 250, 181),
 }
 local tracked = {
-    Monsters = {}, Paint = {}, Tools = {}, Brushes = {}, Doors = {}
+    Monsters = {}, Paint = {}, Tools = {}, Brushes = {}, Doors = {}, SafeDoors = {}
 }
 
 -- Highlights fora dos modelos do mapa: se um NPC atualiza sua arvore de
 -- objetos, o efeito nao e destruido junto de uma peca do personagem.
 -- Tambem evita aninhamento de instancias Highlight entre modelos e pecas.
 local highlightFolder = Instance.new("Folder")
-highlightFolder.Name = "COD_ESP_v15_Highlights"
+highlightFolder.Name = "COD_ESP_v18_Highlights"
 highlightFolder.Parent = Workspace
 local paintColors = {
     red = Color3.fromRGB(255, 70, 80), vermelho = Color3.fromRGB(255, 70, 80),
@@ -157,7 +165,7 @@ local function sizeAllowed(target, category)
     local largest = math.max(size.X, size.Y, size.Z)
     local smallest = math.min(size.X, size.Y, size.Z)
     if largest < 0.08 or smallest < 0 then return false end
-    return largest <= (category == "Monsters" and 100 or (category == "Doors" and 45 or 18))
+    return largest <= (category == "Monsters" and 100 or ((category == "Doors" or category == "SafeDoors") and 45 or 18))
 end
 
 local function contextOf(obj)
@@ -372,7 +380,7 @@ end
 
 local function targetIsVisible(target, category)
     -- A placa da porta pode estar presa a uma parte transparente.
-    if category == "Monsters" or category == "Doors" then return true end
+    if category == "Monsters" or category == "Doors" or category == "SafeDoors" then return true end
     -- Alguns itens coletados sao ocultados em vez de removidos do Workspace.
     local checked = 0
     if target:IsA("BasePart") then
@@ -403,6 +411,7 @@ local function remove(category, target)
     pcall(function()
         if e.highlight then e.highlight:Destroy() end
     end)
+    pcall(function() if e.safeBox then e.safeBox:Destroy() end end)
     pcall(function() e.billboard:Destroy() end)
 end
 
@@ -463,7 +472,7 @@ local function add(category, target, display, customColor)
     billboard.Name = "COD_" .. category .. "_Label"
     billboard.Adornee = anchor
     billboard.Size = UDim2.fromOffset(240, 34)
-    billboard.StudsOffsetWorldSpace = Vector3.new(0, category == "Monsters" and 4.2 or (category == "Doors" and 3.2 or 2.2), 0)
+    billboard.StudsOffsetWorldSpace = Vector3.new(0, category == "Monsters" and 4.2 or ((category == "Doors" or category == "SafeDoors") and 3.2 or 2.2), 0)
     billboard.AlwaysOnTop = true
     billboard.MaxDistance = 20000
     billboard.Enabled = enabled[category]
@@ -487,6 +496,22 @@ local function add(category, target, display, customColor)
         accent = accent, highlightLastRebind = os.clock()
     }
     tracked[category][target] = e
+
+    -- Box 3D dedicado as portas Safe: nao depende do limite de Highlights
+    -- da engine e funciona ate em partes transparentes do mapa.
+    if category == "SafeDoors" then
+        local box = Instance.new("BoxHandleAdornment")
+        box.Name = "COD_SafeZone_Box"
+        box.Adornee = anchor
+        box.Size = anchor.Size
+        box.Color3 = accent
+        box.Transparency = 0.72
+        box.AlwaysOnTop = true
+        box.ZIndex = 2
+        box.Visible = enabled.SafeDoors
+        box.Parent = playerGui
+        e.safeBox = box
+    end
 
     if category == "Monsters" and target:IsA("Model") then
         e.monsterEvents = {
@@ -658,11 +683,178 @@ local function doorCandidate(obj)
     return nil
 end
 
+-- ===== PORTAS DA SAFE ZONE (v1.8) =====
+-- Bloqueia a pasta de colisoes e nomes de hitboxes: a versao anterior
+-- podia selecionar GameplayParts.Colliders.MonsterColliders.Colider
+-- mesmo quando o usuario clicava visualmente na porta Safe Zone.
+local function isCollisionOnlyObject(obj)
+    local p = obj
+    local depth = 0
+    while p and p ~= Workspace and depth < 18 do
+        local n = norm(p.Name)
+        if n == "colliders" or n == "monstercolliders" or n == "collider"
+            or n == "colider" or n == "collisions" or n == "collision"
+            or n == "hitboxes" or n == "hitbox" or n == "collisionparts"
+            or n == "boundingbox" or n == "triggercolliders" then
+            return true
+        end
+        p = p.Parent
+        depth += 1
+    end
+    return false
+end
+
+local function partHasVisibleSurface(part)
+    if not part or not part:IsA("BasePart") then return false end
+    if isCollisionOnlyObject(part) then return false end
+    if part.Transparency >= 0.97 then return false end
+    if part.LocalTransparencyModifier >= 0.97 then return false end
+    return true
+end
+
+
+-- Somente nomes e contexto relacionados a SAFE ZONE sao provas automaticas.
+-- Nao trata toda parede colorida, spawn ou modelo SafeZone como porta.
+-- Como os nomes internos nao foram confirmados via Dex++, o jogador tambem
+-- pode clicar numa porta real para cadastrá-la (sem alterar o servidor).
+local manualSafeDoors = {}
+
+local function isSafeZoneName(name)
+    local n = norm(name)
+    return n:find("safezone", 1, true) ~= nil
+        or n:find("safearea", 1, true) ~= nil
+        or n:find("saferoom", 1, true) ~= nil
+        or n:find("safespot", 1, true) ~= nil
+        or n:find("zonasegura", 1, true) ~= nil
+        or n:find("areasafe", 1, true) ~= nil
+        or n:find("safetyzone", 1, true) ~= nil
+end
+
+local function isDoorName(name)
+    local n = norm(name)
+    for _, word in ipairs({"door", "gate", "entrance", "exit", "portal", "barrier",
+        "passage", "opening", "porta", "portao", "entrada", "saida"}) do
+        if n:find(word, 1, true) then return true end
+    end
+    return false
+end
+
+local function safeZoneAncestor(obj)
+    local cursor = obj
+    local depth = 0
+    while cursor and cursor ~= Workspace and depth < 12 do
+        if isSafeZoneName(cursor.Name) then return true end
+        cursor = cursor.Parent
+        depth += 1
+    end
+    return false
+end
+
+local function explicitSafeDoor(name)
+    local n = norm(name)
+    -- Aceita ambos os sentidos: SafeZoneDoor, DoorSafeZone,
+    -- SafeDoor, SafeZoneExit, EntradaZonaSegura etc.
+    if isSafeZoneName(name) and isDoorName(name) then return true end
+    if n:find("safedoor", 1, true) or n:find("safegate", 1, true)
+        or n:find("safeexit", 1, true) or n:find("safeentrance", 1, true)
+        or n:find("portasegura", 1, true) or n:find("portadasafe", 1, true) then
+        return true
+    end
+    return false
+end
+
+-- Em modelos com diversas pecas, prioriza o modelo da porta, nao a
+-- pasta/zona inteira. Nunca sobe ate um agrupamento chamado apenas SafeZone.
+local function safeDoorShape(obj, manual)
+    if not obj or not insideWorkspace(obj) or insidePlayerCharacter(obj)
+        or isCollisionOnlyObject(obj) then
+        return nil
+    end
+    local start = obj
+    if not (start:IsA("BasePart") or start:IsA("Model")) then return nil end
+    local cursor = start
+    local depth = 0
+    while cursor and cursor ~= Workspace and depth < 7 do
+        if (cursor:IsA("Model") or cursor:IsA("BasePart"))
+            and isDoorName(cursor.Name) and sizeAllowed(cursor, "SafeDoors") then
+            return cursor
+        end
+        cursor = cursor.Parent
+        depth += 1
+    end
+    if manual then
+        if start:IsA("Model") and sizeAllowed(start, "SafeDoors") then return start end
+        if start:IsA("BasePart") then
+            local model = start:FindFirstAncestorOfClass("Model")
+            if model and sizeAllowed(model, "SafeDoors")
+                and not isSafeZoneName(model.Name) then return model end
+            return start
+        end
+    end
+    return nil
+end
+
+local function safeDoorCandidate(obj)
+    if not obj or not insideWorkspace(obj) or insidePlayerCharacter(obj)
+        or isCollisionOnlyObject(obj) then return nil end
+    if not (obj:IsA("Model") or obj:IsA("BasePart")) then return nil end
+    local explicit = explicitSafeDoor(obj.Name)
+    local inSafeZone = safeZoneAncestor(obj)
+    if not explicit and not (inSafeZone and isDoorName(obj.Name)) then return nil end
+    -- Se o nome aponta para a porta, mas o objeto e uma pasta grande,
+    -- preferimos esperar por um filho com geometria para evitar falsos ESP.
+    if explicit and sizeAllowed(obj, "SafeDoors") then return obj end
+    return safeDoorShape(obj, false)
+end
+
+local function isAlreadySafeDoor(target)
+    if tracked.SafeDoors[target] then return true end
+    -- Quando ja marcamos um modelo, nao criamos destaques para cada peca.
+    local p = target.Parent
+    while p and p ~= Workspace do
+        if tracked.SafeDoors[p] then return true end
+        p = p.Parent
+    end
+    return false
+end
+
+local function registerSafeDoor(target, isManual)
+    if not alive or not target or isCollisionOnlyObject(target)
+        or not sizeAllowed(target, "SafeDoors") then return false end
+    if not validPartPosition(anchorOf(target)) or insidePlayerCharacter(target) then return false end
+    if isAlreadySafeDoor(target) then return true end
+
+    -- Um modelo completo substitui seus filhos previamente marcados.
+    if target:IsA("Model") then
+        local redundant = {}
+        for old in pairs(tracked.SafeDoors) do
+            if old:IsDescendantOf(target) then table.insert(redundant, old) end
+        end
+        for _, old in ipairs(redundant) do
+            manualSafeDoors[old] = nil
+            remove("SafeDoors", old)
+        end
+    end
+
+    -- A porta branca da fase final pode receber ambas as deteccoes.
+    -- Evita um segundo Highlight na mesma geometria.
+    if tracked.Doors[target] then remove("Doors", target) end
+    if isManual then manualSafeDoors[target] = true end
+    add("SafeDoors", target, "PORTA SAFE ZONE", categoryColors.SafeDoors)
+    return tracked.SafeDoors[target] ~= nil
+end
+
+local function considerSafeDoor(obj)
+    if not alive then return end
+    local target = safeDoorCandidate(obj)
+    if target then registerSafeDoor(target, false) end
+end
+
 local function considerDoor(obj)
     if not alive then return end
     local target, entry = doorCandidate(obj)
     if not target or not entry or not sizeAllowed(target, "Doors") then return end
-    if tracked.Doors[target] then return end
+    if tracked.Doors[target] or tracked.SafeDoors[target] then return end
     -- Se o modelo ja esta marcado, nao marca as pecas/placas novamente.
     local p = target.Parent
     while p and p ~= Workspace do
@@ -700,6 +892,112 @@ local function localPosition()
     return validPartPosition(char and char:FindFirstChild("HumanoidRootPart"))
 end
 
+-- ===== CONTROLE LOCAL DE VELOCIDADE (v1.6) =====
+-- WalkSpeed e uma propriedade do Humanoid. Em jogos que validam o
+-- movimento no servidor, alterar o valor no cliente pode nao ser eficaz.
+-- Nunca altera a velocidade dos outros jogadores.
+local speed = {
+    active = false,
+    value = 24,
+    min = 0,
+    max = 250,
+    keep = true,              -- reaplica apos resets locais do jogo
+    humanoid = nil,
+    original = nil,           -- lido novamente em cada respawn
+    watch = nil,
+    characterToken = 0,
+}
+local speedElapsed = 0
+local refreshSpeedUi -- preenchido quando os controles forem criados
+
+local function speedNumber(v)
+    v = tonumber(v)
+    if not v or v ~= v or v == math.huge or v == -math.huge then return nil end
+    return math.floor(math.clamp(v, speed.min, speed.max) * 10 + 0.5) / 10
+end
+
+local function prettySpeed(v)
+    v = tonumber(v) or 0
+    if math.abs(v - math.floor(v)) < 0.001 then
+        return tostring(math.floor(v))
+    end
+    return string.format("%.1f", v)
+end
+
+local function setActualSpeed(target)
+    local hum = speed.humanoid
+    if not hum or not hum.Parent or hum.Health <= 0 then return false end
+    return pcall(function()
+        if math.abs(hum.WalkSpeed - target) > 0.01 then
+            hum.WalkSpeed = target
+        end
+    end)
+end
+
+local function setSpeedActive(value)
+    speed.active = value == true
+    if speed.active then
+        setActualSpeed(speed.value)
+    elseif speed.original ~= nil then
+        setActualSpeed(speed.original)
+    end
+    if refreshSpeedUi then refreshSpeedUi() end
+end
+
+local function setSpeedValue(value)
+    local number = speedNumber(value)
+    if number == nil then return false end
+    speed.value = number
+    if speed.active then setActualSpeed(number) end
+    if refreshSpeedUi then refreshSpeedUi() end
+    return true
+end
+
+local function bindSpeedCharacter(character)
+    speed.characterToken += 1
+    local token = speed.characterToken
+    if speed.watch then
+        speed.watch:Disconnect()
+        speed.watch = nil
+    end
+    speed.humanoid = nil
+    speed.original = nil
+    if refreshSpeedUi then refreshSpeedUi() end
+
+    task.spawn(function()
+        if not character then return end
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+            or character:WaitForChild("Humanoid", 12)
+        if not alive or token ~= speed.characterToken or not humanoid
+            or not humanoid:IsA("Humanoid") then return end
+        speed.humanoid = humanoid
+        speed.original = humanoid.WalkSpeed
+        speed.watch = humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+            if not alive or token ~= speed.characterToken then return end
+            -- Atualiza o valor original somente quando o controle esta OFF.
+            -- Quando ON, nao substitui o valor original pelo valor ajustado.
+            if not speed.active then
+                speed.original = humanoid.WalkSpeed
+            end
+            if refreshSpeedUi then refreshSpeedUi() end
+        end)
+        if speed.active then setActualSpeed(speed.value) end
+        if refreshSpeedUi then refreshSpeedUi() end
+    end)
+end
+
+connect(player.CharacterAdded, bindSpeedCharacter)
+if player.Character then bindSpeedCharacter(player.Character) end
+
+local function restoreAndDisconnectSpeed()
+    speed.active = false
+    if speed.original ~= nil then setActualSpeed(speed.original) end
+    if speed.watch then
+        pcall(function() speed.watch:Disconnect() end)
+        speed.watch = nil
+    end
+end
+
 -- Interface independente de bibliotecas, GitHub ou API externa.
 local gui = Instance.new("ScreenGui")
 gui.Name = "ColorOrDieESP_UI"
@@ -710,8 +1008,8 @@ gui.Parent = playerGui
 
 local panel = Instance.new("Frame")
 panel.Name = "Panel"
-panel.Size = UDim2.fromOffset(272, 485)
-panel.Position = UDim2.new(0, 20, 0.28, 0)
+panel.Size = UDim2.fromOffset(272, 602)
+panel.Position = UDim2.new(0, 20, 0.14, 0)
 panel.BackgroundColor3 = Color3.fromRGB(22, 25, 36)
 panel.BorderSizePixel = 0
 panel.Active = true
@@ -726,7 +1024,7 @@ local title = Instance.new("TextLabel")
 title.Position = UDim2.fromOffset(12, 11)
 title.Size = UDim2.fromOffset(242, 21)
 title.BackgroundTransparency = 1
-title.Text = "COLOR OR DIE | ESP v1.5"
+title.Text = "COLOR OR DIE | ESP v1.8"
 title.Font = Enum.Font.GothamBold
 title.TextSize = 16
 title.TextXAlignment = Enum.TextXAlignment.Left
@@ -737,7 +1035,7 @@ local subtitle = Instance.new("TextLabel")
 subtitle.Position = UDim2.fromOffset(12, 33)
 subtitle.Size = UDim2.fromOffset(242, 17)
 subtitle.BackgroundTransparency = 1
-subtitle.Text = "Monstros • Tintas • Ferramentas • Pinceis • Portas"
+subtitle.Text = "Monstros • Itens • Pinceis • Portas • Safe Zone"
 subtitle.TextSize = 10
 subtitle.Font = Enum.Font.Gotham
 subtitle.TextXAlignment = Enum.TextXAlignment.Left
@@ -751,7 +1049,8 @@ local buttonConfigs = {
     {"Tools", "FERRAMENTAS", 139},
     {"Brushes", "PINCEIS", 179},
     {"Doors", "PORTAS DE TINTA", 219},
-    {"Distance", "MOSTRAR DISTANCIA", 259},
+    {"SafeDoors", "PORTAS SAFE ZONE", 259},
+    {"Distance", "MOSTRAR DISTANCIA", 299},
 }
 
 local function refreshButton(category)
@@ -787,6 +1086,7 @@ for _, config in ipairs(buttonConfigs) do
             for _, e in pairs(tracked[category]) do
                 local on = enabled[category] and targetIsVisible(e.target, category)
                 ensureHighlight(category, e, on, false, false)
+                if e.safeBox then e.safeBox.Visible = on end
                 e.billboard.Enabled = on
             end
         end
@@ -794,7 +1094,7 @@ for _, config in ipairs(buttonConfigs) do
 end
 
 local counts = Instance.new("TextLabel")
-counts.Position = UDim2.fromOffset(11, 398)
+counts.Position = UDim2.fromOffset(11, 516)
 counts.Size = UDim2.fromOffset(250, 20)
 counts.BackgroundTransparency = 1
 counts.Text = "Detectados: pesquisando..."
@@ -805,8 +1105,8 @@ counts.TextColor3 = Color3.fromRGB(226, 231, 240)
 counts.Parent = panel
 
 local status = Instance.new("TextLabel")
-status.Position = UDim2.fromOffset(11, 422)
-status.Size = UDim2.fromOffset(250, 46)
+status.Position = UDim2.fromOffset(11, 543)
+status.Size = UDim2.fromOffset(250, 50)
 status.BackgroundTransparency = 1
 status.Text = "Chapter 1: pinceis numerados de 1 a 13. DELETE = menu."
 status.TextWrapped = true
@@ -819,7 +1119,7 @@ status.Parent = panel
 
 local refreshBrushesButton = Instance.new("TextButton")
 refreshBrushesButton.Name = "RefreshBrushes"
-refreshBrushesButton.Position = UDim2.fromOffset(11, 303)
+refreshBrushesButton.Position = UDim2.fromOffset(11, 383)
 refreshBrushesButton.Size = UDim2.fromOffset(250, 38)
 refreshBrushesButton.BackgroundColor3 = Color3.fromRGB(83, 48, 116)
 refreshBrushesButton.BorderSizePixel = 0
@@ -850,14 +1150,14 @@ connect(refreshBrushesButton.MouseButton1Click, function()
         end
     end
     status.Text = "Pinceis Chapter 1 (IDs 1-13). Pesquisa atualizada."
-    print("[COD ESP v1.5] Varredura de pinceis concluida; componentes checados:", checked)
+    print("[COD ESP v1.8] Varredura de pinceis concluida; componentes checados:", checked)
 end)
 
 -- Botao manual de recuperacao: util quando o renderizador continua
 -- mostrando o nome do NPC, mas deixa de desenhar sua silhueta.
 local refreshMonstersButton = Instance.new("TextButton")
 refreshMonstersButton.Name = "RefreshMonsters"
-refreshMonstersButton.Position = UDim2.fromOffset(11, 350)
+refreshMonstersButton.Position = UDim2.fromOffset(11, 430)
 refreshMonstersButton.Size = UDim2.fromOffset(250, 34)
 refreshMonstersButton.BackgroundColor3 = Color3.fromRGB(80, 44, 59)
 refreshMonstersButton.BorderSizePixel = 0
@@ -881,6 +1181,374 @@ connect(refreshMonstersButton.MouseButton1Click, function()
     status.Text = "Contornos de " .. count .. " monstro(s) recriados."
 end)
 
+-- Marcacao assistida v1.8: clique -> selecao visivel -> confirmacao.
+-- Ignora mouse.Target: esse alvo costuma ser uma hitbox invisivel de monstro.
+local safeDoorClickArmed = false
+local pendingSafeTarget = nil
+local safePreview = nil
+
+local markSafeButton = Instance.new("TextButton")
+markSafeButton.Name = "MarkSafeDoor"
+markSafeButton.Position = UDim2.fromOffset(11, 472)
+markSafeButton.Size = UDim2.fromOffset(250, 35)
+markSafeButton.BackgroundColor3 = Color3.fromRGB(33, 102, 80)
+markSafeButton.BorderSizePixel = 0
+markSafeButton.Text = "MARCAR PORTA SAFE (CLIQUE)"
+markSafeButton.TextColor3 = Color3.fromRGB(238, 255, 247)
+markSafeButton.TextSize = 11
+markSafeButton.Font = Enum.Font.GothamSemibold
+markSafeButton.Parent = panel
+local markSafeCorner = Instance.new("UICorner")
+markSafeCorner.CornerRadius = UDim.new(0, 7)
+markSafeCorner.Parent = markSafeButton
+
+local function clearSafePreview()
+    if safePreview then
+        pcall(function() safePreview:Destroy() end)
+        safePreview = nil
+    end
+    pendingSafeTarget = nil
+end
+
+local function paintSafePreview(part)
+    if safePreview then pcall(function() safePreview:Destroy() end) end
+    safePreview = Instance.new("SelectionBox")
+    safePreview.Name = "COD_Safe_Preview"
+    safePreview.Adornee = part
+    safePreview.Color3 = Color3.fromRGB(255, 239, 95)
+    safePreview.SurfaceTransparency = 0.85
+    safePreview.LineThickness = 0.08
+    safePreview.Parent = playerGui
+end
+
+local function raycastVisibleSafeDoor(input)
+    local camera = Workspace.CurrentCamera
+    if not camera then return nil end
+    local pos = UserInputService:GetMouseLocation()
+    if input and input.UserInputType == Enum.UserInputType.Touch then
+        pos = Vector2.new(input.Position.X, input.Position.Y)
+    end
+    -- ScreenPointToRay considera a barra superior, pois GetMouseLocation
+    -- usa coordenadas da janela inteira.
+    local ray = camera:ScreenPointToRay(pos.X, pos.Y)
+    local ignores = {}
+    if player.Character then table.insert(ignores, player.Character) end
+
+    -- Pula o conjunto inteiro de colliders quando ele existir.
+    local gp = Workspace:FindFirstChild("GameplayParts")
+    local colliders = gp and gp:FindFirstChild("Colliders")
+    if colliders then table.insert(ignores, colliders) end
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.IgnoreWater = true
+    params.RespectCanCollide = false
+    for _ = 1, 32 do
+        params.FilterDescendantsInstances = ignores
+        local result = Workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
+        if not result then return nil end
+        local part = result.Instance
+        if partHasVisibleSurface(part) and not insidePlayerCharacter(part) then
+            return part
+        end
+        table.insert(ignores, part)
+    end
+    return nil
+end
+
+connect(markSafeButton.MouseButton1Click, function()
+    if not alive then return end
+    if pendingSafeTarget then
+        local chosen = pendingSafeTarget
+        if registerSafeDoor(chosen, true) then
+            print("[COD ESP v1.8] Porta Safe confirmada:", chosen:GetFullName())
+            status.Text = "ESP Safe Zone confirmado: " .. chosen:GetFullName()
+            safeDoorClickArmed = false
+            clearSafePreview()
+            markSafeButton.Text = "MARCAR PORTA SAFE (CLIQUE)"
+        else
+            status.Text = "Objeto nao e uma geometria valida. Clique outra vez na porta."
+            clearSafePreview()
+            safeDoorClickArmed = true
+            markSafeButton.Text = "AGUARDANDO CLIQUE NA PORTA..."
+        end
+        return
+    end
+    safeDoorClickArmed = not safeDoorClickArmed
+    markSafeButton.Text = safeDoorClickArmed
+        and "AGUARDANDO CLIQUE NA PORTA..." or "MARCAR PORTA SAFE (CLIQUE)"
+    status.Text = safeDoorClickArmed
+        and "Clique na PARTE VISIVEL da porta. Colliders invisiveis sao ignorados."
+        or "Marcacao Safe Zone cancelada."
+end)
+
+connect(UserInputService.InputBegan, function(input, processed)
+    if not alive or not safeDoorClickArmed or processed then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+    local selected = raycastVisibleSafeDoor(input)
+    if not selected then
+        clearSafePreview()
+        status.Text = "Nenhuma parte visivel encontrada. Clique na face da porta."
+        return
+    end
+    local target = safeDoorShape(selected, true)
+    if not target or isCollisionOnlyObject(target) then
+        clearSafePreview()
+        status.Text = "Objeto invalido: " .. selected:GetFullName()
+        return
+    end
+
+    pendingSafeTarget = target
+    paintSafePreview(selected)
+    local path = target:GetFullName()
+    status.Text = "PREVIA: " .. path .. "  | Clique em CONFIRMAR para marcar, ou clique em outra parte."
+    markSafeButton.Text = "CONFIRMAR PORTA SAFE"
+    print("[COD ESP v1.8] PREVIA da porta (nao confirmada):", path)
+end)
+
+-- Painel de velocidade separado, aberto pelo botao principal.
+-- Ele pode ser arrastado para nao atrapalhar a tela nem o Dex++.
+local speedSettingsOpen = false
+local speedMenuButton = Instance.new("TextButton")
+speedMenuButton.Name = "SpeedSettingsButton"
+speedMenuButton.Position = UDim2.fromOffset(11, 339)
+speedMenuButton.Size = UDim2.fromOffset(250, 34)
+speedMenuButton.BorderSizePixel = 0
+speedMenuButton.Font = Enum.Font.GothamSemibold
+speedMenuButton.TextSize = 12
+speedMenuButton.Parent = panel
+local speedMenuCorner = Instance.new("UICorner")
+speedMenuCorner.CornerRadius = UDim.new(0, 7)
+speedMenuCorner.Parent = speedMenuButton
+
+local speedPanel = Instance.new("Frame")
+speedPanel.Name = "SpeedSettings"
+speedPanel.Size = UDim2.fromOffset(315, 367)
+speedPanel.BackgroundColor3 = Color3.fromRGB(20, 25, 36)
+speedPanel.BorderSizePixel = 0
+speedPanel.Active = true
+speedPanel.Draggable = true
+speedPanel.Visible = false
+speedPanel.ZIndex = 8
+speedPanel.Parent = gui
+local vpsz = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize
+if vpsz and vpsz.X < 680 then
+    speedPanel.Position = UDim2.fromOffset(15, 55)
+else
+    speedPanel.Position = UDim2.fromOffset(310, 200)
+end
+local speedCorner = Instance.new("UICorner")
+speedCorner.CornerRadius = UDim.new(0, 11)
+speedCorner.Parent = speedPanel
+
+local function speedText(name, textValue, pos, size, fontSize, color)
+    local label = Instance.new("TextLabel")
+    label.Name = name
+    label.Position = pos
+    label.Size = size
+    label.BackgroundTransparency = 1
+    label.Text = textValue
+    label.Font = Enum.Font.Gotham
+    label.TextSize = fontSize or 12
+    label.TextColor3 = color or Color3.fromRGB(227, 231, 242)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.ZIndex = 9
+    label.Parent = speedPanel
+    return label
+end
+
+local function speedButton(name, caption, position, size, bg)
+    local b = Instance.new("TextButton")
+    b.Name = name
+    b.Position = position
+    b.Size = size
+    b.BackgroundColor3 = bg or Color3.fromRGB(41, 47, 67)
+    b.BorderSizePixel = 0
+    b.Text = caption
+    b.Font = Enum.Font.GothamSemibold
+    b.TextSize = 12
+    b.TextColor3 = Color3.fromRGB(247, 248, 255)
+    b.ZIndex = 9
+    b.Parent = speedPanel
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = b
+    return b
+end
+
+local speedTitle = speedText("SpeedTitle", "MOVIMENTO | VELOCIDADE", UDim2.fromOffset(13, 12),
+    UDim2.fromOffset(274, 20), 15, Color3.fromRGB(255, 255, 255))
+speedTitle.Font = Enum.Font.GothamBold
+local speedClose = speedButton("CloseSpeed", "X", UDim2.fromOffset(284, 9), UDim2.fromOffset(20, 24))
+speedClose.BackgroundTransparency = 1
+speedClose.TextColor3 = Color3.fromRGB(229, 121, 131)
+
+local speedToggle = speedButton("ToggleSpeed", "VELOCIDADE [OFF]", UDim2.fromOffset(12, 42),
+    UDim2.fromOffset(291, 39))
+speedText("SpeedValueLabel", "Velocidade (studs/s)", UDim2.fromOffset(12, 95),
+    UDim2.fromOffset(150, 21), 12)
+local minusSpeed = speedButton("MinusSpeed", "-5", UDim2.fromOffset(12, 125), UDim2.fromOffset(59, 34))
+local plusSpeed = speedButton("PlusSpeed", "+5", UDim2.fromOffset(244, 125), UDim2.fromOffset(59, 34))
+local speedInput = Instance.new("TextBox")
+speedInput.Name = "CustomSpeed"
+speedInput.Position = UDim2.fromOffset(80, 125)
+speedInput.Size = UDim2.fromOffset(155, 34)
+speedInput.BackgroundColor3 = Color3.fromRGB(35, 40, 56)
+speedInput.BorderSizePixel = 0
+speedInput.ClearTextOnFocus = false
+speedInput.Text = prettySpeed(speed.value)
+speedInput.PlaceholderText = "Ex.: 32"
+speedInput.Font = Enum.Font.GothamBold
+speedInput.TextSize = 15
+speedInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+speedInput.ZIndex = 9
+speedInput.Parent = speedPanel
+local speedInputCorner = Instance.new("UICorner")
+speedInputCorner.CornerRadius = UDim.new(0, 6)
+speedInputCorner.Parent = speedInput
+
+-- Controle deslizante de 0 ate 250. Entrada manual tambem aceita decimais.
+local sliderBar = Instance.new("Frame")
+sliderBar.Name = "SpeedSlider"
+sliderBar.Position = UDim2.fromOffset(13, 179)
+sliderBar.Size = UDim2.fromOffset(289, 9)
+sliderBar.BackgroundColor3 = Color3.fromRGB(50, 55, 77)
+sliderBar.BorderSizePixel = 0
+sliderBar.Active = true
+sliderBar.ZIndex = 9
+sliderBar.Parent = speedPanel
+local sliderCorner = Instance.new("UICorner")
+sliderCorner.CornerRadius = UDim.new(1, 0)
+sliderCorner.Parent = sliderBar
+local sliderFill = Instance.new("Frame")
+sliderFill.Name = "Fill"
+sliderFill.BackgroundColor3 = Color3.fromRGB(77, 198, 255)
+sliderFill.BorderSizePixel = 0
+sliderFill.Size = UDim2.fromScale(speed.value / speed.max, 1)
+sliderFill.ZIndex = 10
+sliderFill.Parent = sliderBar
+local sliderFillCorner = Instance.new("UICorner")
+sliderFillCorner.CornerRadius = UDim.new(1, 0)
+sliderFillCorner.Parent = sliderFill
+local sliderKnob = Instance.new("Frame")
+sliderKnob.Name = "Handle"
+sliderKnob.Size = UDim2.fromOffset(15, 15)
+sliderKnob.AnchorPoint = Vector2.new(0.5, 0.5)
+sliderKnob.Position = UDim2.fromScale(speed.value / speed.max, 0.5)
+sliderKnob.BackgroundColor3 = Color3.fromRGB(232, 245, 255)
+sliderKnob.BorderSizePixel = 0
+sliderKnob.Active = true
+sliderKnob.ZIndex = 11
+sliderKnob.Parent = sliderBar
+local knobCorner = Instance.new("UICorner")
+knobCorner.CornerRadius = UDim.new(1, 0)
+knobCorner.Parent = sliderKnob
+speedText("SpeedRange", "0                                         250", UDim2.fromOffset(13, 192),
+    UDim2.fromOffset(289, 17), 10, Color3.fromRGB(161, 169, 192))
+
+local speedPresets = {16, 24, 32, 50}
+for index, preset in ipairs(speedPresets) do
+    local b = speedButton("SpeedPreset" .. preset, tostring(preset),
+        UDim2.fromOffset(12 + (index - 1) * 74, 220), UDim2.fromOffset(69, 33))
+    connect(b.MouseButton1Click, function()
+        if alive then setSpeedValue(preset) end
+    end)
+end
+local keepToggle = speedButton("KeepSpeed", "MANTER VELOCIDADE [ON]",
+    UDim2.fromOffset(12, 265), UDim2.fromOffset(291, 32))
+local restoreSpeed = speedButton("RestoreDefault", "DESATIVAR E RESTAURAR ORIGINAL",
+    UDim2.fromOffset(12, 305), UDim2.fromOffset(291, 32), Color3.fromRGB(76, 49, 62))
+local speedInfo = speedText("SpeedInfo", "", UDim2.fromOffset(12, 344),
+    UDim2.fromOffset(291, 17), 10, Color3.fromRGB(164, 175, 199))
+
+refreshSpeedUi = function()
+    if not alive then return end
+    local on = speed.active
+    speedMenuButton.Text = "VELOCIDADE: " .. prettySpeed(speed.value) .. " [" .. (on and "ON" or "OFF") .. "]  >"
+    speedMenuButton.TextColor3 = on and Color3.fromRGB(241, 253, 255) or Color3.fromRGB(204, 210, 232)
+    speedMenuButton.BackgroundColor3 = on and Color3.fromRGB(30, 81, 91) or Color3.fromRGB(41, 47, 67)
+    speedToggle.Text = on and "VELOCIDADE [ON]" or "VELOCIDADE [OFF]"
+    speedToggle.BackgroundColor3 = on and Color3.fromRGB(30, 101, 85) or Color3.fromRGB(48, 53, 71)
+    keepToggle.Text = "MANTER VELOCIDADE [" .. (speed.keep and "ON" or "OFF") .. "]"
+    keepToggle.BackgroundColor3 = speed.keep and Color3.fromRGB(39, 68, 81) or Color3.fromRGB(48, 53, 71)
+    if not speedInput:IsFocused() then speedInput.Text = prettySpeed(speed.value) end
+    local ratio = math.clamp(speed.value / speed.max, 0, 1)
+    sliderFill.Size = UDim2.fromScale(ratio, 1)
+    sliderKnob.Position = UDim2.fromScale(ratio, 0.5)
+    local current = speed.humanoid and speed.humanoid.Parent and prettySpeed(speed.humanoid.WalkSpeed) or "--"
+    local original = speed.original ~= nil and prettySpeed(speed.original) or "--"
+    speedInfo.Text = "Original: " .. original .. "    Atual: " .. current .. " studs/s"
+end
+
+connect(speedMenuButton.MouseButton1Click, function()
+    if not alive then return end
+    speedSettingsOpen = not speedSettingsOpen
+    speedPanel.Visible = panel.Visible and speedSettingsOpen
+end)
+connect(speedClose.MouseButton1Click, function()
+    speedSettingsOpen = false
+    speedPanel.Visible = false
+end)
+connect(speedToggle.MouseButton1Click, function()
+    if alive then setSpeedActive(not speed.active) end
+end)
+connect(minusSpeed.MouseButton1Click, function()
+    if alive then setSpeedValue(speed.value - 5) end
+end)
+connect(plusSpeed.MouseButton1Click, function()
+    if alive then setSpeedValue(speed.value + 5) end
+end)
+connect(speedInput.FocusLost, function()
+    if not alive then return end
+    local raw = speedInput.Text:gsub(",", ".")
+    if not setSpeedValue(raw) then refreshSpeedUi() end
+    speedInput.Text = prettySpeed(speed.value)
+end)
+connect(keepToggle.MouseButton1Click, function()
+    if not alive then return end
+    speed.keep = not speed.keep
+    refreshSpeedUi()
+end)
+connect(restoreSpeed.MouseButton1Click, function()
+    if not alive then return end
+    setSpeedActive(false)
+    if speed.original ~= nil then speed.value = speedNumber(speed.original) or speed.value end
+    refreshSpeedUi()
+end)
+
+local draggingSpeedSlider = false
+local function updateSliderFromPointer(x)
+    local left, width = sliderBar.AbsolutePosition.X, sliderBar.AbsoluteSize.X
+    if width <= 0 then return end
+    local ratio = math.clamp((x - left) / width, 0, 1)
+    setSpeedValue(math.floor((ratio * speed.max) * 10 + 0.5) / 10)
+end
+local function beginSpeedSlider(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        draggingSpeedSlider = true
+        updateSliderFromPointer(input.Position.X)
+    end
+end
+connect(sliderBar.InputBegan, beginSpeedSlider)
+connect(sliderKnob.InputBegan, beginSpeedSlider)
+connect(UserInputService.InputChanged, function(input)
+    if not alive or not draggingSpeedSlider then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        updateSliderFromPointer(input.Position.X)
+    end
+end)
+connect(UserInputService.InputEnded, function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        draggingSpeedSlider = false
+    end
+end)
+refreshSpeedUi()
+
 local closeButton = Instance.new("TextButton")
 closeButton.Name = "StopScript"
 closeButton.Position = UDim2.fromOffset(243, 10)
@@ -894,6 +1562,8 @@ closeButton.Parent = panel
 
 local function stop()
     if not alive then return end
+    restoreAndDisconnectSpeed()
+    if safePreview then pcall(function() safePreview:Destroy() end) end
     alive = false
     for _, c in ipairs(links) do pcall(function() c:Disconnect() end) end
     for category, entries in pairs(tracked) do
@@ -912,6 +1582,7 @@ connect(closeButton.MouseButton1Click, stop)
 connect(UserInputService.InputBegan, function(input, processed)
     if not processed and input.KeyCode == Enum.KeyCode.Delete then
         panel.Visible = not panel.Visible
+        speedPanel.Visible = panel.Visible and speedSettingsOpen
     end
 end)
 
@@ -932,6 +1603,7 @@ scanWorld = function()
         end
         if obj:IsA("Model") or obj:IsA("BasePart")
             or obj:IsA("TextLabel") or obj:IsA("TextButton") then
+            considerSafeDoor(obj)
             considerDoor(obj)
         end
         -- Evita travar o jogo ao percorrer mapas muito grandes.
@@ -957,10 +1629,12 @@ connect(Workspace.DescendantAdded, function(obj)
         task.defer(function()
             if not alive then return end
             consider(obj)
+            considerSafeDoor(obj)
             considerDoor(obj)
             local parent = obj.Parent
             if parent and parent:IsA("Model") then
                 consider(parent)
+                considerSafeDoor(parent)
                 considerDoor(parent)
             end
         end)
@@ -983,12 +1657,21 @@ end)
 local elapsed = 0
 connect(RunService.Heartbeat, function(dt)
     if not alive then return end
-    elapsed += tonumber(dt) or 0
+    local delta = tonumber(dt) or 0
+    speedElapsed += delta
+    if speedElapsed >= 0.3 then
+        speedElapsed = 0
+        if speed.active and speed.keep then
+            setActualSpeed(speed.value)
+        end
+        if speedPanel.Visible and refreshSpeedUi then refreshSpeedUi() end
+    end
+    elapsed += delta
     if elapsed < 0.35 then return end
     elapsed = 0
 
     local me = localPosition()
-    local quantities = {Monsters = 0, Paint = 0, Tools = 0, Brushes = 0, Doors = 0}
+    local quantities = {Monsters = 0, Paint = 0, Tools = 0, Brushes = 0, Doors = 0, SafeDoors = 0}
     for category, entries in pairs(tracked) do
         local toRemove = {}
         for target, e in pairs(entries) do
@@ -1024,6 +1707,11 @@ connect(RunService.Heartbeat, function(dt)
                     ensureHighlight(category, e, show, false, false)
                 end
                 e.billboard.Enabled = show
+                if e.safeBox then
+                    e.safeBox.Visible = show
+                    if e.safeBox.Adornee ~= e.anchor then e.safeBox.Adornee = e.anchor end
+                    if e.safeBox.Size ~= e.anchor.Size then e.safeBox.Size = e.anchor.Size end
+                end
                 if visible then quantities[category] += 1 end
                 if me and enabled.Distance then
                     e.label.Text = string.format("%s | %d studs", e.name, math.floor((pos - me).Magnitude + 0.5))
@@ -1035,16 +1723,16 @@ connect(RunService.Heartbeat, function(dt)
         for _, target in ipairs(toRemove) do remove(category, target) end
     end
 
-    counts.Text = string.format("M:%d  T:%d  F:%d  P:%d  Portas:%d",
+    counts.Text = string.format("M:%d T:%d F:%d P:%d Cor:%d Safe:%d",
         quantities.Monsters, quantities.Paint, quantities.Tools,
-        quantities.Brushes, quantities.Doors)
+        quantities.Brushes, quantities.Doors, quantities.SafeDoors)
 end)
 
 task.spawn(function()
     scanWorld()
     if alive then
         local collectionFolder = collectableContainer()
-        print("[COLOR OR DIE ESP] v1.5 carregado. PINCEIS: IDs 1-13; sem aprendizado.",
+        print("[COLOR OR DIE ESP] v1.8 carregado. PINCEIS: IDs 1-13; Safe Zone ESP ativo.",
             "Pasta:", collectionFolder and collectionFolder:GetFullName() or "NAO ENCONTRADA")
     end
     while alive do
