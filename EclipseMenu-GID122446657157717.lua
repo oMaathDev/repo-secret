@@ -2,11 +2,6 @@
 
 
 
--- SCRIPT LINK
-loadstring(game:HttpGet("https://raw.githubusercontent.com/oMaathDev/repo-secret/refs/heads/main/EclipseMenu-GID122446657157717.lua"))()
-
-
-
 ---- SOURCE CODE [SNIPER ARENA]
 
 -- ECLIPSE MENU | SNIPER ARENA | TOKYO UI (integracao v6.6 - ADVANCED ESP + TARGETING)
