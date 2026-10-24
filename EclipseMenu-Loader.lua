@@ -2,7 +2,7 @@
 
 
 
---[[
+---[[
     ECLIPSE LOADER
     Universal Game Detection
     Supported: Sniper Arena, BloxStrike, DOORS
@@ -32,13 +32,13 @@ local Games = {
     },
 
     -- COLOR OR DIE
-    [2440500123] = {
+    [4523856444] = {
         Name = "COLOR OR DIE",
         Script = "https://raw.githubusercontent.com/oMaathDev/repo-secret/refs/heads/main/EclipseMenu-GID12931609417.lua"
     },
 
     -- FLEE THE FACILITY
-    [2440500123] = {
+    [372226183] = {
         Name = "FLEE THE FACILITY",
         Script = "https://raw.githubusercontent.com/oMaathDev/repo-secret/refs/heads/main/EclipseMenu-GID893973440.lua"
     }
