@@ -2,13 +2,6 @@
 
 
 
--- SCRIPT LINK
-loadstring(game:HttpGet("https://raw.githubusercontent.com/oMaathDev/repo-secret/refs/heads/main/EclipseMenu-Loader.lua"))()
-
-
-
----- SOURCE CODE [LOADER]
-
 --[[
     ECLIPSE LOADER
     Universal Game Detection
